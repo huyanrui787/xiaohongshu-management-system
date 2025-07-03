@@ -1,0 +1,25 @@
+import express from 'express';
+import { AnalyticsController } from '../controllers/AnalyticsController';
+import { authenticate, checkPermission } from '../middleware/auth';
+
+const router = express.Router();
+const analyticsController = new AnalyticsController();
+
+router.use(authenticate);
+
+router.get('/', checkPermission('analytics:read'), analyticsController.getAnalytics);
+router.post('/trend', checkPermission('analytics:create'), analyticsController.analyzeTrend);
+router.post('/competitor', checkPermission('analytics:create'), analyticsController.analyzeCompetitor);
+router.post('/audience', checkPermission('analytics:create'), analyticsController.analyzeAudience);
+router.post('/performance', checkPermission('analytics:create'), analyticsController.analyzePerformance);
+router.post('/keyword', checkPermission('analytics:create'), analyticsController.analyzeKeyword);
+
+router.get('/dashboard', checkPermission('analytics:read'), analyticsController.getDashboardData);
+router.get('/reports', checkPermission('analytics:read'), analyticsController.getReports);
+router.post('/reports', checkPermission('analytics:create'), analyticsController.generateReport);
+
+router.get('/trending-keywords', checkPermission('analytics:read'), analyticsController.getTrendingKeywords);
+router.get('/content-suggestions', checkPermission('analytics:read'), analyticsController.getContentSuggestions);
+router.get('/optimal-posting-times', checkPermission('analytics:read'), analyticsController.getOptimalPostingTimes);
+
+export { router as analyticsRoutes };

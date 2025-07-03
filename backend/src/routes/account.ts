@@ -1,0 +1,28 @@
+import express from 'express';
+import { AccountController } from '../controllers/AccountController';
+import { authenticate, checkPermission } from '../middleware/auth';
+
+const router = express.Router();
+const accountController = new AccountController();
+
+// 账号管理路由 (开发环境暂时不需要认证)
+router.get('/', accountController.getAccounts);
+router.get('/:id', accountController.getAccount);
+router.post('/', accountController.createAccount);
+router.put('/:id', accountController.updateAccount);
+router.delete('/:id', accountController.deleteAccount);
+
+// 批量操作
+router.post('/import', authenticate, checkPermission('account:create'), accountController.importAccounts);
+router.post('/batch/status', authenticate, checkPermission('account:update'), accountController.batchUpdateStatus);
+router.post('/batch/delete', authenticate, checkPermission('account:delete'), accountController.batchDeleteAccounts);
+
+// 账号内容管理
+router.get('/:id/contents', authenticate, checkPermission('account:read'), accountController.getAccountContents);
+router.get('/:id/stats', authenticate, checkPermission('account:read'), accountController.getAccountStats);
+router.put('/:id/stats', authenticate, checkPermission('account:update'), accountController.updateAccountStats);
+
+// 账号验证
+router.post('/:id/verify', authenticate, checkPermission('account:manage'), accountController.verifyAccountLogin);
+
+export { router as accountRoutes };

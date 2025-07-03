@@ -1,0 +1,554 @@
+import { Request, Response, NextFunction } from 'express';
+import { Op } from 'sequelize';
+import { Content } from '../models/Content';
+import { ContentPublish } from '../models/ContentPublish';
+import { Account } from '../models/Account';
+import { User } from '../models/User';
+import { createError } from '../middleware/errorHandler';
+import { AuthRequest } from '../middleware/auth';
+
+export class ContentController {
+  // 获取内容列表
+  async getContents(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { 
+        page = 1, 
+        limit = 10, 
+        contentType,
+        category,
+        publishStatus,
+        reviewStatus,
+        search,
+        sortBy = 'createdAt',
+        sortOrder = 'DESC'
+      } = req.query;
+
+      const offset = (Number(page) - 1) * Number(limit);
+      const where: any = { userId: req.user!.id };
+
+      if (contentType) {
+        where.contentType = contentType;
+      }
+
+      if (category) {
+        where.category = category;
+      }
+
+      if (publishStatus) {
+        where.publishStatus = publishStatus;
+      }
+
+      if (reviewStatus) {
+        where.reviewStatus = reviewStatus;
+      }
+
+      if (search) {
+        where[Op.or] = [
+          { title: { [Op.like]: `%${search}%` } },
+          { content: { [Op.like]: `%${search}%` } }
+        ];
+      }
+
+      const { count, rows } = await Content.findAndCountAll({
+        where,
+        offset,
+        limit: Number(limit),
+        order: [[sortBy as string, sortOrder as string]],
+        include: [
+          {
+            model: User,
+            attributes: ['id', 'username', 'email']
+          }
+        ]
+      });
+
+      res.json({
+        success: true,
+        data: {
+          contents: rows,
+          pagination: {
+            total: count,
+            page: Number(page),
+            pages: Math.ceil(count / Number(limit)),
+            limit: Number(limit)
+          }
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 获取单个内容详情
+  async getContent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+
+      const content = await Content.findByPk(id, {
+        include: [
+          {
+            model: User,
+            attributes: ['id', 'username', 'email']
+          }
+        ]
+      });
+
+      if (!content) {
+        throw createError('Content not found', 404);
+      }
+
+      res.json({
+        success: true,
+        data: { content }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 创建内容
+  async createContent(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const {
+        title,
+        content,
+        contentType,
+        images,
+        video,
+        cover,
+        tags,
+        hashtags,
+        location,
+        category,
+        targetAudience,
+        mood = 'happy',
+        isAIGenerated = false,
+        aiPrompt,
+        aiModel,
+        scheduledTime
+      } = req.body;
+
+      const newContent = await Content.create({
+        userId: req.user!.id,
+        title,
+        content,
+        contentType,
+        images,
+        video,
+        cover,
+        tags,
+        hashtags,
+        location,
+        category,
+        targetAudience,
+        mood,
+        isAIGenerated,
+        aiPrompt,
+        aiModel,
+        publishStatus: 'draft',
+        reviewStatus: 'pending',
+        scheduledTime
+      });
+
+      res.status(201).json({
+        success: true,
+        data: { content: newContent }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 更新内容
+  async updateContent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const updateData = req.body;
+
+      const content = await Content.findByPk(id);
+      if (!content) {
+        throw createError('Content not found', 404);
+      }
+
+      await content.update(updateData);
+
+      res.json({
+        success: true,
+        data: { content }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 删除内容
+  async deleteContent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+
+      const content = await Content.findByPk(id);
+      if (!content) {
+        throw createError('Content not found', 404);
+      }
+
+      await content.destroy();
+
+      res.json({
+        success: true,
+        message: 'Content deleted successfully'
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 发布内容到账号
+  async publishContent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const { accountIds, scheduledTime } = req.body;
+
+      const content = await Content.findByPk(id);
+      if (!content) {
+        throw createError('Content not found', 404);
+      }
+
+      if (!Array.isArray(accountIds) || accountIds.length === 0) {
+        throw createError('Account IDs array is required', 400);
+      }
+
+      // 验证所有账号是否存在
+      const accounts = await Account.findAll({
+        where: { id: { [Op.in]: accountIds } }
+      });
+
+      if (accounts.length !== accountIds.length) {
+        throw createError('Some accounts not found', 400);
+      }
+
+      // 创建发布记录
+      const publishRecords = [];
+      for (const accountId of accountIds) {
+        const existingPublish = await ContentPublish.findOne({
+          where: { contentId: id, accountId }
+        });
+
+        if (!existingPublish) {
+          const publishRecord = await ContentPublish.create({
+            contentId: id,
+            accountId,
+            status: 'pending'
+          });
+          publishRecords.push(publishRecord);
+        }
+      }
+
+      // 更新内容状态
+      await content.update({
+        publishStatus: scheduledTime ? 'scheduled' : 'publishing',
+        scheduledTime
+      });
+
+      res.json({
+        success: true,
+        data: {
+          content,
+          publishRecords,
+          message: `Content scheduled for publishing to ${publishRecords.length} accounts`
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 获取内容发布记录
+  async getContentPublishes(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const { page = 1, limit = 10, status } = req.query;
+
+      const offset = (Number(page) - 1) * Number(limit);
+
+      const content = await Content.findByPk(id);
+      if (!content) {
+        throw createError('Content not found', 404);
+      }
+
+      const where: any = { contentId: id };
+      if (status) {
+        where.status = status;
+      }
+
+      const { count, rows } = await ContentPublish.findAndCountAll({
+        where,
+        offset,
+        limit: Number(limit),
+        order: [['createdAt', 'DESC']],
+        include: [
+          {
+            model: Account,
+            attributes: ['id', 'nickname', 'username', 'platform']
+          }
+        ]
+      });
+
+      res.json({
+        success: true,
+        data: {
+          publishes: rows,
+          pagination: {
+            total: count,
+            page: Number(page),
+            pages: Math.ceil(count / Number(limit)),
+            limit: Number(limit)
+          }
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 审核内容
+  async reviewContent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const { reviewStatus, reviewNotes } = req.body;
+
+      if (!['approved', 'rejected'].includes(reviewStatus)) {
+        throw createError('Invalid review status', 400);
+      }
+
+      const content = await Content.findByPk(id);
+      if (!content) {
+        throw createError('Content not found', 404);
+      }
+
+      await content.update({
+        reviewStatus,
+        reviewNotes
+      });
+
+      res.json({
+        success: true,
+        data: { content }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 批量操作内容
+  async batchOperation(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { contentIds, operation, data } = req.body;
+
+      if (!Array.isArray(contentIds) || contentIds.length === 0) {
+        throw createError('Content IDs array is required', 400);
+      }
+
+      let result;
+
+      switch (operation) {
+        case 'delete':
+          result = await Content.destroy({
+            where: { id: { [Op.in]: contentIds } }
+          });
+          break;
+
+        case 'updateStatus':
+          const [updatedCount] = await Content.update(
+            { publishStatus: data.status },
+            { where: { id: { [Op.in]: contentIds } } }
+          );
+          result = updatedCount;
+          break;
+
+        case 'updateCategory':
+          const [categoryUpdatedCount] = await Content.update(
+            { category: data.category },
+            { where: { id: { [Op.in]: contentIds } } }
+          );
+          result = categoryUpdatedCount;
+          break;
+
+        default:
+          throw createError('Invalid operation', 400);
+      }
+
+      res.json({
+        success: true,
+        data: {
+          operation,
+          affectedCount: result,
+          message: `${operation} completed for ${result} items`
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 获取内容统计
+  async getContentStats(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.id;
+
+      // 获取内容统计
+      const contentStats = await Content.findAll({
+        where: { userId },
+        attributes: [
+          'publishStatus',
+          [Content.sequelize!.fn('COUNT', '*'), 'count']
+        ],
+        group: ['publishStatus'],
+        raw: true
+      });
+
+      // 获取内容类型统计
+      const typeStats = await Content.findAll({
+        where: { userId },
+        attributes: [
+          'contentType',
+          [Content.sequelize!.fn('COUNT', '*'), 'count']
+        ],
+        group: ['contentType'],
+        raw: true
+      });
+
+      // 获取分类统计
+      const categoryStats = await Content.findAll({
+        where: { userId },
+        attributes: [
+          'category',
+          [Content.sequelize!.fn('COUNT', '*'), 'count']
+        ],
+        group: ['category'],
+        raw: true
+      });
+
+      // 获取发布表现统计
+      const publishStats = await ContentPublish.findAll({
+        attributes: [
+          [ContentPublish.sequelize!.fn('COUNT', '*'), 'totalPublishes'],
+          [ContentPublish.sequelize!.fn('SUM', ContentPublish.sequelize!.col('views')), 'totalViews'],
+          [ContentPublish.sequelize!.fn('SUM', ContentPublish.sequelize!.col('likes')), 'totalLikes'],
+          [ContentPublish.sequelize!.fn('SUM', ContentPublish.sequelize!.col('comments')), 'totalComments'],
+          [ContentPublish.sequelize!.fn('AVG', ContentPublish.sequelize!.col('engagementRate')), 'avgEngagementRate']
+        ],
+        include: [
+          {
+            model: Content,
+            where: { userId },
+            attributes: []
+          }
+        ],
+        raw: true
+      });
+
+      res.json({
+        success: true,
+        data: {
+          contentStats,
+          typeStats,
+          categoryStats,
+          publishStats: publishStats[0] || {}
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // AI生成内容
+  async generateContent(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { 
+        prompt, 
+        contentType = 'note',
+        category,
+        targetAudience,
+        mood = 'happy',
+        style
+      } = req.body;
+
+      if (!prompt) {
+        throw createError('Prompt is required', 400);
+      }
+
+      // TODO: 集成AI服务生成内容
+      // 这里是模拟生成的内容
+      const generatedContent = {
+        title: `AI生成标题: ${category}相关内容`,
+        content: `基于提示词"${prompt}"生成的内容。这是一个${mood}风格的${contentType}，针对${targetAudience}受众。`,
+        tags: ['AI生成', category],
+        hashtags: [`#${category}`, '#AI生成内容']
+      };
+
+      const content = await Content.create({
+        userId: req.user!.id,
+        title: generatedContent.title,
+        content: generatedContent.content,
+        contentType,
+        category: category || '其他',
+        targetAudience,
+        mood,
+        tags: generatedContent.tags,
+        hashtags: generatedContent.hashtags,
+        isAIGenerated: true,
+        aiPrompt: prompt,
+        aiModel: 'gpt-3.5-turbo', // 根据实际使用的模型调整
+        publishStatus: 'draft',
+        reviewStatus: 'pending'
+      });
+
+      res.status(201).json({
+        success: true,
+        data: { content }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // 复制内容
+  async duplicateContent(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+
+      const originalContent = await Content.findByPk(id);
+      if (!originalContent) {
+        throw createError('Content not found', 404);
+      }
+
+      const duplicatedContent = await Content.create({
+        userId: originalContent.userId,
+        title: `${originalContent.title} (复制)`,
+        content: originalContent.content,
+        contentType: originalContent.contentType,
+        images: originalContent.images,
+        video: originalContent.video,
+        cover: originalContent.cover,
+        tags: originalContent.tags,
+        hashtags: originalContent.hashtags,
+        location: originalContent.location,
+        category: originalContent.category,
+        targetAudience: originalContent.targetAudience,
+        mood: originalContent.mood,
+        isAIGenerated: originalContent.isAIGenerated,
+        aiPrompt: originalContent.aiPrompt,
+        aiModel: originalContent.aiModel,
+        publishStatus: 'draft',
+        reviewStatus: 'pending'
+      });
+
+      res.status(201).json({
+        success: true,
+        data: { content: duplicatedContent }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+}

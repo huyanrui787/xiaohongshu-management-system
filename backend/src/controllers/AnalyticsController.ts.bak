@@ -1,0 +1,752 @@
+import { Response, NextFunction } from 'express';
+import { Analytics } from '../models/Analytics';
+import { Account } from '../models/Account';
+import { Content } from '../models/Content';
+import { createError } from '../middleware/errorHandler';
+import { AuthRequest } from '../middleware/auth';
+
+export class AnalyticsController {
+  async getAnalytics(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const {
+        page = 1,
+        limit = 20,
+        type,
+        dateFrom,
+        dateTo
+      } = req.query;
+
+      const filter: any = { createdBy: req.user!._id };
+
+      if (type) filter.type = type;
+      if (dateFrom || dateTo) {
+        filter.createdAt = {};
+        if (dateFrom) filter.createdAt.$gte = new Date(dateFrom as string);
+        if (dateTo) filter.createdAt.$lte = new Date(dateTo as string);
+      }
+
+      const analytics = await Analytics.find(filter)
+        .populate('createdBy', 'username')
+        .sort({ createdAt: -1 })
+        .limit(Number(limit) * 1)
+        .skip((Number(page) - 1) * Number(limit));
+
+      const total = await Analytics.countDocuments(filter);
+
+      res.json({
+        success: true,
+        data: {
+          analytics,
+          pagination: {
+            current: Number(page),
+            pageSize: Number(limit),
+            total,
+            pages: Math.ceil(total / Number(limit))
+          }
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async analyzeTrend(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { keyword, platform = 'xiaohongshu', timeRange } = req.body;
+
+      const trendData = await this.performTrendAnalysis(keyword, platform, timeRange);
+
+      const analytics = new Analytics({
+        type: 'trend',
+        trendData,
+        metadata: {
+          dataSource: platform,
+          analysisDate: new Date(),
+          confidence: 0.85,
+          sampleSize: 1000
+        },
+        insights: {
+          summary: `关键词"${keyword}"的趋势分析结果`,
+          recommendations: [
+            '建议在热度上升期增加发布频率',
+            '关注相关热门话题',
+            '优化内容标签使用'
+          ],
+          opportunities: [
+            '利用关键词热度创作内容',
+            '结合相关话题扩大影响力'
+          ],
+          risks: [
+            '注意关键词竞争激烈程度',
+            '避免过度使用可能导致限流'
+          ]
+        },
+        createdBy: req.user!._id
+      });
+
+      await analytics.save();
+
+      res.status(201).json({
+        success: true,
+        data: { analytics }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async analyzeCompetitor(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { competitorInfo } = req.body;
+
+      const competitorData = await this.performCompetitorAnalysis(competitorInfo);
+
+      const analytics = new Analytics({
+        type: 'competitor',
+        competitorData,
+        metadata: {
+          dataSource: competitorInfo.platform,
+          analysisDate: new Date(),
+          confidence: 0.9,
+          sampleSize: 500
+        },
+        insights: {
+          summary: `竞品"${competitorInfo.name}"的分析结果`,
+          recommendations: [
+            '学习竞品的内容发布时间策略',
+            '参考热门内容类型',
+            '优化话题标签使用'
+          ],
+          opportunities: [
+            '差异化内容定位',
+            '覆盖竞品未涉及的话题',
+            '提升内容质量和互动性'
+          ],
+          risks: [
+            '避免过度模仿',
+            '注意内容原创性',
+            '防止恶性竞争'
+          ]
+        },
+        createdBy: req.user!._id
+      });
+
+      await analytics.save();
+
+      res.status(201).json({
+        success: true,
+        data: { analytics }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async analyzeAudience(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { accountIds, timeRange } = req.body;
+
+      const accounts = await Account.find({
+        _id: { $in: accountIds },
+        createdBy: req.user!._id
+      });
+
+      if (accounts.length === 0) {
+        throw createError('No valid accounts found', 404);
+      }
+
+      const audienceData = await this.performAudienceAnalysis(accounts, timeRange);
+
+      const analytics = new Analytics({
+        type: 'audience',
+        audienceData,
+        metadata: {
+          dataSource: 'xiaohongshu',
+          analysisDate: new Date(),
+          confidence: 0.8,
+          sampleSize: accounts.length * 1000
+        },
+        insights: {
+          summary: '目标受众分析结果',
+          recommendations: [
+            '根据受众活跃时间调整发布策略',
+            '创作符合受众兴趣的内容',
+            '优化内容呈现形式'
+          ],
+          opportunities: [
+            '扩大目标受众群体',
+            '提升用户粘性',
+            '增强品牌认知度'
+          ],
+          risks: [
+            '受众需求变化',
+            '竞争对手争夺',
+            '平台算法调整影响'
+          ]
+        },
+        createdBy: req.user!._id
+      });
+
+      await analytics.save();
+
+      res.status(201).json({
+        success: true,
+        data: { analytics }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async analyzePerformance(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { accountId, timeRange } = req.body;
+
+      const account = await Account.findOne({
+        _id: accountId,
+        createdBy: req.user!._id
+      });
+
+      if (!account) {
+        throw createError('Account not found', 404);
+      }
+
+      const contents = await Content.find({
+        'publishPlan.accounts': accountId,
+        'publishPlan.status': 'published',
+        createdAt: {
+          $gte: new Date(timeRange.start),
+          $lte: new Date(timeRange.end)
+        }
+      });
+
+      const performanceData = await this.performPerformanceAnalysis(account, contents, timeRange);
+
+      const analytics = new Analytics({
+        type: 'performance',
+        performanceData,
+        metadata: {
+          dataSource: 'xiaohongshu',
+          analysisDate: new Date(),
+          confidence: 0.95,
+          sampleSize: contents.length
+        },
+        insights: {
+          summary: `账号"${account.nickname}"的表现分析`,
+          recommendations: [
+            '优化发布时间策略',
+            '提升内容质量',
+            '增强用户互动'
+          ],
+          opportunities: [
+            '扩大内容覆盖面',
+            '提升转化率',
+            '建立粉丝社群'
+          ],
+          risks: [
+            '内容同质化',
+            '用户流失',
+            '平台限制风险'
+          ]
+        },
+        createdBy: req.user!._id
+      });
+
+      await analytics.save();
+
+      res.status(201).json({
+        success: true,
+        data: { analytics }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async analyzeKeyword(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { keyword } = req.body;
+
+      const keywordData = await this.performKeywordAnalysis(keyword);
+
+      const analytics = new Analytics({
+        type: 'keyword',
+        keywordData,
+        metadata: {
+          dataSource: 'xiaohongshu',
+          analysisDate: new Date(),
+          confidence: 0.88,
+          sampleSize: 10000
+        },
+        insights: {
+          summary: `关键词"${keyword}"的详细分析`,
+          recommendations: [
+            '结合高相关度关键词使用',
+            '关注搜索量变化趋势',
+            '优化关键词密度'
+          ],
+          opportunities: [
+            '抓住关键词红利期',
+            '建立关键词矩阵',
+            '提升搜索排名'
+          ],
+          risks: [
+            '关键词竞争加剧',
+            '搜索热度下降',
+            '算法变化影响'
+          ]
+        },
+        createdBy: req.user!._id
+      });
+
+      await analytics.save();
+
+      res.status(201).json({
+        success: true,
+        data: { analytics }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getDashboardData(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { timeRange = '7d' } = req.query;
+      
+      const startDate = this.getStartDate(timeRange as string);
+      const endDate = new Date();
+
+      const [accountStats, contentStats, performanceStats, recentAnalytics] = await Promise.all([
+        this.getAccountStats(req.user!._id, startDate, endDate),
+        this.getContentStats(req.user!._id, startDate, endDate),
+        this.getPerformanceStats(req.user!._id, startDate, endDate),
+        this.getRecentAnalytics(req.user!._id, 5)
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          timeRange: {
+            start: startDate,
+            end: endDate
+          },
+          stats: {
+            accounts: accountStats,
+            content: contentStats,
+            performance: performanceStats
+          },
+          recentAnalytics
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getReports(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const {
+        page = 1,
+        limit = 10,
+        type,
+        dateFrom,
+        dateTo
+      } = req.query;
+
+      const filter: any = { createdBy: req.user!._id };
+
+      if (type) filter.type = type;
+      if (dateFrom || dateTo) {
+        filter.createdAt = {};
+        if (dateFrom) filter.createdAt.$gte = new Date(dateFrom as string);
+        if (dateTo) filter.createdAt.$lte = new Date(dateTo as string);
+      }
+
+      const reports = await Analytics.find(filter)
+        .select('type metadata insights createdAt')
+        .sort({ createdAt: -1 })
+        .limit(Number(limit) * 1)
+        .skip((Number(page) - 1) * Number(limit));
+
+      const total = await Analytics.countDocuments(filter);
+
+      res.json({
+        success: true,
+        data: {
+          reports,
+          pagination: {
+            current: Number(page),
+            pageSize: Number(limit),
+            total,
+            pages: Math.ceil(total / Number(limit))
+          }
+        }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async generateReport(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { reportType, config } = req.body;
+
+      const reportData = await this.generateCustomReport(reportType, config, req.user!._id);
+
+      res.json({
+        success: true,
+        data: reportData
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getTrendingKeywords(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { category, limit = 20 } = req.query;
+
+      const trendingKeywords = await this.fetchTrendingKeywords(category as string, Number(limit));
+
+      res.json({
+        success: true,
+        data: { keywords: trendingKeywords }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getContentSuggestions(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { category, targetAudience, limit = 10 } = req.query;
+
+      const suggestions = await this.generateContentSuggestions(
+        category as string,
+        targetAudience as string,
+        Number(limit)
+      );
+
+      res.json({
+        success: true,
+        data: { suggestions }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async getOptimalPostingTimes(req: AuthRequest, res: Response, next: NextFunction) {
+    try {
+      const { accountIds } = req.query;
+
+      const accounts = await Account.find({
+        _id: { $in: (accountIds as string).split(',') },
+        createdBy: req.user!._id
+      });
+
+      const optimalTimes = await this.calculateOptimalPostingTimes(accounts);
+
+      res.json({
+        success: true,
+        data: { optimalTimes }
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  private async performTrendAnalysis(keyword: string, platform: string, timeRange: any) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    return {
+      keyword,
+      platform,
+      timeRange,
+      metrics: {
+        searchVolume: Math.floor(Math.random() * 10000) + 1000,
+        engagement: Math.random() * 10,
+        mentionCount: Math.floor(Math.random() * 1000) + 100,
+        sentiment: ['positive', 'neutral', 'negative'][Math.floor(Math.random() * 3)] as any
+      },
+      relatedKeywords: [
+        `${keyword}攻略`,
+        `${keyword}推荐`,
+        `${keyword}分享`,
+        `${keyword}心得`
+      ],
+      topPosts: Array.from({ length: 5 }, (_, i) => ({
+        id: `post_${i + 1}`,
+        title: `${keyword}相关热门内容 ${i + 1}`,
+        author: `作者${i + 1}`,
+        engagement: Math.floor(Math.random() * 1000) + 100,
+        url: `https://xiaohongshu.com/post_${i + 1}`
+      }))
+    };
+  }
+
+  private async performCompetitorAnalysis(competitorInfo: any) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    return {
+      competitor: competitorInfo,
+      metrics: {
+        followersCount: Math.floor(Math.random() * 100000) + 10000,
+        avgEngagement: Math.random() * 10,
+        postFrequency: Math.random() * 3 + 1,
+        avgViews: Math.floor(Math.random() * 50000) + 5000
+      },
+      contentStrategy: {
+        topCategories: ['美妆', '穿搭', '生活', '美食'],
+        postingTimes: ['09:00-11:00', '14:00-16:00', '19:00-21:00'],
+        hashtagUsage: [
+          { tag: '美妆分享', frequency: 15 },
+          { tag: '穿搭日记', frequency: 12 },
+          { tag: '生活记录', frequency: 10 }
+        ]
+      },
+      recentPosts: Array.from({ length: 10 }, (_, i) => ({
+        id: `competitor_post_${i + 1}`,
+        title: `竞品内容 ${i + 1}`,
+        engagement: Math.floor(Math.random() * 2000) + 200,
+        publishTime: new Date(Date.now() - i * 24 * 60 * 60 * 1000)
+      }))
+    };
+  }
+
+  private async performAudienceAnalysis(accounts: any[], timeRange: any) {
+    await new Promise(resolve => setTimeout(resolve, 2500));
+
+    return {
+      demographics: {
+        ageGroups: [
+          { range: '18-24', percentage: 35 },
+          { range: '25-34', percentage: 40 },
+          { range: '35-44', percentage: 20 },
+          { range: '45+', percentage: 5 }
+        ],
+        gender: {
+          male: 25,
+          female: 70,
+          other: 5
+        },
+        locations: [
+          { city: '上海', percentage: 25 },
+          { city: '北京', percentage: 20 },
+          { city: '广州', percentage: 15 },
+          { city: '深圳', percentage: 12 },
+          { city: '其他', percentage: 28 }
+        ]
+      },
+      interests: [
+        { category: '美妆护肤', score: 8.5 },
+        { category: '时尚穿搭', score: 7.8 },
+        { category: '生活方式', score: 7.2 },
+        { category: '美食料理', score: 6.9 },
+        { category: '旅行摄影', score: 6.5 }
+      ],
+      behavior: {
+        activeHours: [9, 10, 11, 14, 15, 16, 19, 20, 21],
+        deviceTypes: [
+          { type: 'iPhone', percentage: 60 },
+          { type: 'Android', percentage: 35 },
+          { type: '其他', percentage: 5 }
+        ],
+        engagementPatterns: {
+          avgSessionTime: 25,
+          dailyActiveTime: '19:00-22:00',
+          preferredContentType: 'image'
+        }
+      }
+    };
+  }
+
+  private async performPerformanceAnalysis(account: any, contents: any[], timeRange: any) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const totalViews = contents.reduce((sum, content) => sum + (content.performance?.views || 0), 0);
+    const totalLikes = contents.reduce((sum, content) => sum + (content.performance?.likes || 0), 0);
+    const totalComments = contents.reduce((sum, content) => sum + (content.performance?.comments || 0), 0);
+
+    return {
+      accountId: account._id,
+      timeRange,
+      metrics: {
+        totalPosts: contents.length,
+        totalViews,
+        totalLikes,
+        totalComments,
+        totalShares: Math.floor(totalLikes * 0.1),
+        avgEngagementRate: contents.length > 0 ? ((totalLikes + totalComments) / totalViews * 100) : 0,
+        followerGrowth: Math.floor(Math.random() * 1000) + 100
+      },
+      topPerformingPosts: contents
+        .sort((a, b) => (b.performance?.views || 0) - (a.performance?.views || 0))
+        .slice(0, 5)
+        .map(content => ({
+          contentId: content._id,
+          title: content.title,
+          engagement: (content.performance?.likes || 0) + (content.performance?.comments || 0),
+          views: content.performance?.views || 0
+        })),
+      engagementTrends: Array.from({ length: 7 }, (_, i) => ({
+        date: new Date(Date.now() - (6 - i) * 24 * 60 * 60 * 1000),
+        views: Math.floor(Math.random() * 5000) + 1000,
+        likes: Math.floor(Math.random() * 500) + 100,
+        comments: Math.floor(Math.random() * 100) + 20
+      }))
+    };
+  }
+
+  private async performKeywordAnalysis(keyword: string) {
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    return {
+      keyword,
+      searchVolume: Math.floor(Math.random() * 50000) + 5000,
+      competition: ['low', 'medium', 'high'][Math.floor(Math.random() * 3)] as any,
+      trend: ['rising', 'stable', 'declining'][Math.floor(Math.random() * 3)] as any,
+      relatedKeywords: [
+        { keyword: `${keyword}教程`, relevance: 0.95 },
+        { keyword: `${keyword}攻略`, relevance: 0.90 },
+        { keyword: `${keyword}推荐`, relevance: 0.85 },
+        { keyword: `${keyword}分享`, relevance: 0.80 },
+        { keyword: `${keyword}心得`, relevance: 0.75 }
+      ],
+      suggestionScore: Math.random() * 10
+    };
+  }
+
+  private getStartDate(timeRange: string): Date {
+    const now = new Date();
+    switch (timeRange) {
+      case '1d':
+        return new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      case '7d':
+        return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      case '30d':
+        return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      case '90d':
+        return new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+      default:
+        return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    }
+  }
+
+  private async getAccountStats(userId: string, startDate: Date, endDate: Date) {
+    const total = await Account.countDocuments({ createdBy: userId });
+    const active = await Account.countDocuments({ 
+      createdBy: userId, 
+      status: 'active',
+      lastActiveTime: { $gte: startDate }
+    });
+
+    return {
+      total,
+      active,
+      inactive: total - active,
+      riskDistribution: {
+        low: Math.floor(total * 0.7),
+        medium: Math.floor(total * 0.25),
+        high: Math.floor(total * 0.05)
+      }
+    };
+  }
+
+  private async getContentStats(userId: string, startDate: Date, endDate: Date) {
+    const total = await Content.countDocuments({ 
+      createdBy: userId,
+      createdAt: { $gte: startDate, $lte: endDate }
+    });
+    const published = await Content.countDocuments({
+      createdBy: userId,
+      'publishPlan.status': 'published',
+      createdAt: { $gte: startDate, $lte: endDate }
+    });
+
+    return {
+      total,
+      published,
+      draft: total - published,
+      avgEngagement: Math.random() * 5 + 2
+    };
+  }
+
+  private async getPerformanceStats(userId: string, startDate: Date, endDate: Date) {
+    return {
+      totalViews: Math.floor(Math.random() * 100000) + 10000,
+      totalLikes: Math.floor(Math.random() * 10000) + 1000,
+      totalComments: Math.floor(Math.random() * 2000) + 200,
+      engagementRate: Math.random() * 5 + 2
+    };
+  }
+
+  private async getRecentAnalytics(userId: string, limit: number) {
+    return await Analytics.find({ createdBy: userId })
+      .select('type metadata.analysisDate insights.summary')
+      .sort({ createdAt: -1 })
+      .limit(limit);
+  }
+
+  private async generateCustomReport(reportType: string, config: any, userId: string) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    return {
+      reportType,
+      generatedAt: new Date(),
+      summary: `${reportType}报告已生成`,
+      data: config,
+      downloadUrl: `/api/reports/download/${Date.now()}`
+    };
+  }
+
+  private async fetchTrendingKeywords(category: string, limit: number) {
+    const keywords = [
+      '夏日穿搭', '防晒攻略', '减肥餐', '护肤心得', '美妆教程',
+      '旅行攻略', '居家好物', '健身打卡', '美食分享', '拍照技巧',
+      '职场穿搭', '约会妆容', '周末游', '烘焙日记', '生活技巧'
+    ];
+
+    return keywords.slice(0, limit).map(keyword => ({
+      keyword,
+      trend: Math.random() > 0.5 ? 'rising' : 'stable',
+      score: Math.random() * 10,
+      growth: Math.random() * 100
+    }));
+  }
+
+  private async generateContentSuggestions(category: string, targetAudience: string, limit: number) {
+    const suggestions = [
+      '夏日清爽穿搭分享',
+      '平价好物种草合集',
+      '一周健康减脂餐',
+      '护肤步骤详细解析',
+      '周末居家生活记录'
+    ];
+
+    return suggestions.slice(0, limit).map(suggestion => ({
+      title: suggestion,
+      category,
+      targetAudience,
+      estimatedEngagement: Math.random() * 5 + 3,
+      difficulty: Math.random() > 0.5 ? 'easy' : 'medium'
+    }));
+  }
+
+  private async calculateOptimalPostingTimes(accounts: any[]) {
+    return {
+      weekdays: [
+        { time: '09:00-11:00', score: 8.5 },
+        { time: '14:00-16:00', score: 7.2 },
+        { time: '19:00-21:00', score: 9.1 }
+      ],
+      weekends: [
+        { time: '10:00-12:00', score: 8.8 },
+        { time: '15:00-17:00', score: 7.8 },
+        { time: '20:00-22:00', score: 9.3 }
+      ],
+      bestOverall: '19:00-21:00'
+    };
+  }
+}

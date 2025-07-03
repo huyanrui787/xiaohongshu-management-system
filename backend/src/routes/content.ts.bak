@@ -1,0 +1,32 @@
+import express from 'express';
+import { ContentController } from '../controllers/ContentController';
+import { authenticate, checkPermission } from '../middleware/auth';
+
+const router = express.Router();
+const contentController = new ContentController();
+
+// 内容管理路由
+router.get('/', authenticate, checkPermission('content:read'), contentController.getContents);
+router.get('/stats', authenticate, checkPermission('content:read'), contentController.getContentStats);
+router.get('/:id', authenticate, checkPermission('content:read'), contentController.getContent);
+router.post('/', authenticate, checkPermission('content:create'), contentController.createContent);
+router.put('/:id', authenticate, checkPermission('content:update'), contentController.updateContent);
+router.delete('/:id', authenticate, checkPermission('content:delete'), contentController.deleteContent);
+
+// 内容发布
+router.post('/:id/publish', authenticate, checkPermission('content:publish'), contentController.publishContent);
+router.get('/:id/publishes', authenticate, checkPermission('content:read'), contentController.getContentPublishes);
+
+// 内容审核
+router.post('/:id/review', authenticate, checkPermission('content:review'), contentController.reviewContent);
+
+// 批量操作
+router.post('/batch', authenticate, checkPermission('content:update'), contentController.batchOperation);
+
+// AI生成内容
+router.post('/generate', authenticate, checkPermission('content:create'), contentController.generateContent);
+
+// 复制内容
+router.post('/:id/duplicate', authenticate, checkPermission('content:create'), contentController.duplicateContent);
+
+export { router as contentRoutes };
